@@ -1,0 +1,227 @@
+.TH UXFS 1 "08 MAY 2021"
+.SH NAME
+uxfs \- Bridge for user interfaces as virtual filesystems
+.SH SYNOPSIS
+\fBuxfs\fR [\fBoptions\fR] [-- \fIcmd\fR [\fIarg\fR ...]]
+.SH DESCRIPTION
+\fIuxfs\fR is a bridge between a \fIfuse\fR virtual filesystem
+and a command \fIcmd\fR - the controller - that processes file
+operations.
+As user processes access \fIuxfs\fR's virtual filesystem
+it receives system calls from \fIlibfuse\fR, translates them
+into a simple line protocol and sends the operations to the
+the controller.
+.br
+The controller can be configured as command \fIcmd\fR on
+\fIuxfs\fR's command line and \fIuxfs\fR
+will start \fIcmd\fR with the given \fIarg\fRs.
+If no \fIcmd\fR is set, then \fIuxfs\fR expects to be already
+connected to its controller on stdio.
+Obviously, in this case the controller must start \fIuxfs\fR.
+.sp
+Due to the protocol used, \fIuxfs\fR can only process text but no
+binary data.
+Among the requests which go to the controller are file read and
+write operations.
+The controller can then provide the data that is returned to the
+reading user process or perform actions depending on the data that
+was written to the file.
+.SH PROTOCOL
+\fIuxfs\fR uses a simple line protocol to communicate with its
+controlling process \fIcmd\fR.
+Operations may have a parameter and send file contents
+(\fBWRITE\fR operation) to the controller in a data block or
+expect data in the controller's reply (\fBREAD\fR).
+File data follows the operation (or the reply) and is terminated
+with a line that consists of only a single dot.
+Lines that begin with a dot must be preceeded with a dot.
+.sp
+The example
+.sp
+  READ /a
+  +OK
+  Hello World!
+  .
+.sp
+shows \fIuxfs\fR sending the \fBREAD\fR operation
+when a process opens the file \fI/a\fR for reading.
+The controller replies with sending the file's content for this
+request.
+The next request may return completly different data.
+.SS "Response Format"
+Each of the controller's replies must begin with either \fB+OK\fR or
+\fB-ERR\fR to indicate success of failure of the operation.
+If the status is not \fB+OK\fR, \fIuxfs\fR will terminate with an
+error message.
+The status flag may be followed by additional commands for \fIuxfs\fR
+which are separated by semicolons.
+Posssible commands are:
+.TP
+\fBDIR\fR
+sends file creation information to \fIuxfs\fR.
+The lines following the controller reply define one file per line,
+which have the format
+.sp
+  \fIpath\fR \fImode\fR
+.sp
+\fImode\fR can be either \fBr\fR, \fBw\fR or \fBrw\fR to make
+the file readable, writeable or both.
+\fIpath\fR is the file's path in the virtual fs and must begin
+with a slash.
+If \fIpath\fR ends with a slash then it is created as directory.
+The definition list end with a line that consists only of a single
+dot `\fB.\fR`.
+The \fBDIR\fR command should be used in response to the \fBINIT\fR
+operation to populate the filesystem.
+.sp
+If \fIpath\fR already exists, only the permission are changed.
+.sp
+  INIT
+  +OK; DIR
+  / rw
+.sp
+would make the initially read-only root directory writable.
+.TP
+\fBQUIT\fR
+terminates \fIuxfs\fR.
+.PP
+.SS "Operations"
+\fIuxfs\fR sends the following operations to its controller.
+.TP
+\fBINIT\fR
+This operation is used to query filesystem layout information
+through the \fBDIR\fR (see above) command during initialisation.
+In this example
+.sp
+  INIT
+  +OK; DIR;
+  /a r
+  /b w
+  /c rw
+  /d/ rw
+  /shutdown w
+.sp
+the filesystem is populated with 4 files (one readonly, two
+writeables and one read-write) and one read-writeable directory.
+.TP
+\fBWRITE\fR \fIpath\fR
+is send when a process has written data to \fIpath\fR and closed
+the file.
+.TP
+\fBREAD\fR \fIpath\fR
+is sent when a process read the file \fIpath\fR.
+The controller is expected to return the file's content after
+the \fB+OK\fR status indicator.
+.TP
+\fBFILEOP\fR
+is sent when a process performed a file operation.
+Any additional parameters (command name and parameters) are sent
+in \fBFILEOP\fR's data block.
+File operations and parameters are:
+.sp
+  rename \fIfrom\fR \fIto\fR
+  mkdir \fIpath\fR
+  rmdir \fIpath\fR
+  unlink \fIpath\fR
+.sp
+Other operations (e.g. \fIchmod\fR or \fIchown\fR) are not
+implemented.
+The operations are subject to permission checking by \fIuxfs\fR
+and are sent to the controller for informational purposes only.
+That is, the controller cannot deny any of the operations.
+However, the controller may create files or directories as a part
+of the response.
+.sp
+  FILEOP
+  mkdir
+  /x
+  +OK; DIR
+  /x/a w
+  /x/b w
+  /x/c r
+.sp
+would create three files in the directory created by the user process.
+The controller could also additionaly send
+.sp
+  /x/ r
+.sp
+to revoke the user's write permissions on the directory.
+The FILEOP operation is not used for static filesystems.
+.SH NOTES
+.SS Modifyable Filesystems and File Types
+On initialisation the filesystem is not modifyable by a process,
+that is files can only be created and deleted by the controlling
+program.
+Processes accessing the filesystem can read or write files
+(according to the file's permissions) or list directories.
+.sp
+This changes when a directory with read-write permissions is
+created by the controller.
+Below this directory operations to create files and/or directories,
+to delete or rename them are possible.
+.sp
+Read-write operations differ between these used-created and
+the controller-created files.
+.TP
+Controller created files
+Read and write operations are not dependant, the data that is
+written to a file is not necessarily the data that is read later.
+Instead, all read/write operations trigger a \fBREAD\fR/\fBWRITE\fR
+operation to the controller.
+.TP
+User created files
+In contrast to this, when data is written to a user created file a
+\fBWRITE\fR operation goes to the controller but the data is
+also stored in a buffer and returned on read operations
+without contacting the controller.
+.PP
+Effectively user-created files can be used to write data through
+arbitrary files to the controller (if the controller supports that) 
+but not to read from the controller.
+.SH "LIMITATIONS"
+.SS Storage
+\fIuxfs\fR stores its virtual filesystem directory tree in an array of
+file "objects" (they are not really objects).
+Files are inserted into the array as they are created.
+But when files are deleted they are not removed from the array.
+Instead, the corresponding array cell is marked only as deleted
+and if the file is created later again the deleted flag is cleared.
+That means that if a user process creates a lot of files and deletes
+them later the memory that was allocated for them is not freed.
+This is not the usage scenario, \fIuxfs\fR is created for.
+.SS Threading
+\fIuxfs\fR should enable simple creation of virtual filsystems that
+implement a certain function.
+To support this (i.e. implementing controllers in typical scripting
+languages), all controller I/O is locked againt parallel threads.
+This is not a too bad restriction because a simple read-write loop
+in the controller would have the same effect.
+While it is processing one request, it cannot read another.
+Due to the way \fIuxfs\fR data structures are implemented more locking
+is used when files are e.g. created or deleted.
+This all makes \fIuxfs\fR not a good candidate for a filesystem
+with high frequencies of such operations because it might be to
+slow.
+.SS Roundup
+\fIuxfs\fR may have problems with thread-locking and its internal
+storage but both issues may appear only for modifyable filesystems.
+\fIuxfs\fR should perform well with static filesystems, modifyable
+filesystems where files are removed and re-created later.
+.SH OPTIONS
+\fBuxfs\fR supports the following options:
+.TP
+\fB-d\fR
+prints controller operations and responses to \fIstderr\fR.
+.TP
+\fB-s\fR
+runs in a single thread.
+Use this option if you think that muli-thread causes issues.
+Due to the way \fIuxfs\fR does internal thread-locking this shouldn't
+slow \fIuxfs\fR own too much.
+.TP
+\fB-v\fR
+prints messages about called functions.
+\fB-v\fR may be given a second time to increase the message level.
+.PP
+.SH NOTES
+.SH "SEE ALSO"

@@ -1,0 +1,116 @@
+#!/usr/bin/gawk -E
+#
+# Start:  mkdir -p x  &&  ./ux-test-main
+#
+
+function readData(   line, D) {
+	while (UXFS |& getline line > 0) {
+		if (line == ".")
+			break;
+		else if (substr(line, 1, 1) == ".")
+			line = substr(line, 2);
+
+		D = D line "\n";
+		}
+
+	return (D);
+	}
+
+function writeData(status, T,   i, n, line, x) {
+	printf ("%s\n", status) |& UXFS;
+	n = split(T, x, "\n");
+	for (i = 1; i <= n; i++) {
+		if (substr(x[i], 1, 1) == ".")
+			printf (".%s\n", x[i]) |& UXFS;
+		else
+			printf ("%s\n", x[i]) |& UXFS;
+		}
+
+	printf (".\n") |& UXFS;
+	return (0);
+	}
+
+BEGIN {
+	STDERR = "/dev/stderr";
+	UXFS = "./uxfs ./x";
+
+	while (UXFS |& getline > 0) {
+		printf (">> %s\n", $0) >>STDERR;
+
+		logfile = logfile $0 "\n";
+		cmd = toupper($1);
+		if (cmd == "INIT") {
+			printf ("+OK; DIR;\n" \
+				"/ rw\n" \
+				"/ab r\n" \
+				"/d/ rw\n" \
+				"/d/a w\n" \
+				"/shutdown w\n" \
+				"/t1 w\n" \
+				"/t2 r\n" \
+				"/t3 rw\n" \
+				".\n") |& UXFS;
+			}
+		else if (cmd == "WRITE") {
+			path = $2;
+			T = readData();
+
+			r = "+OK"
+			if (path == "/shutdown")
+				r = "+OK; QUIT";
+			else if (match(path, /^\/([^\/]+)\/([^\/]+)$/, x) > 0) {
+				value[x[1], x[2]] = T+0;
+				}
+
+			printf ("%s\n", r) |& UXFS;
+			printf ("** %s\n%s\n", path, T) >>STDERR;
+			}
+		else if (cmd == "READ") {
+			path = $2;
+			if (path == "/ab")
+				writeData("+OK", logfile);
+			else if (match(path, /^\/([^\/]+)\/c$/, x) > 0) {
+				D = sqrt(value[x[1], "a"] ** 2 + \
+					 value[x[1], "b"] ** 2);
+				writeData("+OK", D);
+				}
+			else {
+				now = systime();
+				d = strftime("%H:%M:%S", now);
+				D = now " " d " " path;
+				writeData("+OK", D);
+				}
+			}
+		else if (cmd == "FILEOP") {
+			O = readData();
+			sub(/[ \t\r\n]+$/, "", O);
+			n = split(O, x, "\n");
+			p = x[1];
+			for (i = 2; i <= n; i++)
+				p = p " " x[i];
+
+			if (x[1] != "mkdir"  ||  index(substr(x[2], 2) , "/") > 0)
+				printf ("+OK\n") |& UXFS;
+			else {
+				status = "+OK; DIR";
+				D = x[2] "/a w\n" \
+					x[2] "/b w\n" \
+					x[2] "/c r\n";
+
+				writeData(status, D);
+				}
+
+			printf ("** %s\n", p) >>STDERR;
+			}
+		else {
+			printf ("unknown command: %s\n", $1) >>STDERR;
+			printf ("-ERR: unknown command: %s\n", $1) |& UXFS;
+			break;
+			}
+
+		fflush();
+		}
+
+	exit (0);
+	}
+
